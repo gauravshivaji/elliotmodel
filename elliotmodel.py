@@ -5,6 +5,8 @@ import ta
 import streamlit as st
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+from ta.momentum import RSIIndicator
+from ta.trend import SMAIndicator
 
 # Demo Nifty 500 tickers subset for testing limit & example
 NIFTY_500_TICKERS = [
@@ -18,17 +20,24 @@ def tradingview_link(ticker):
 def fetch_data(ticker):
     df = yf.download(ticker, period="1y", interval="1d", progress=False)
     return df
-
 def calculate_features(df):
     df = df.copy()
-    # Calculate indicators
-    df["rsi"] = ta.momentum.rsi(df["Close"], window=14)
-    df["sma20"] = ta.trend.sma_indicator(df["Close"], window=20)
-    df["sma50"] = ta.trend.sma_indicator(df["Close"], window=50)
-    df["sma200"] = ta.trend.sma_indicator(df["Close"], window=200)
+    rsi_indicator = RSIIndicator(close=df["Close"], window=14)
+    df["rsi"] = rsi_indicator.rsi()
+    
+    sma20 = SMAIndicator(close=df["Close"], window=20)
+    df["sma20"] = sma20.sma_indicator()
+    
+    sma50 = SMAIndicator(close=df["Close"], window=50)
+    df["sma50"] = sma50.sma_indicator()
+    
+    sma200 = SMAIndicator(close=df["Close"], window=200)
+    df["sma200"] = sma200.sma_indicator()
+    
     df["support"] = df["Low"].rolling(20).min()
     df["resistance"] = df["High"].rolling(20).max()
-    # Compute Fibonacci levels based on last 60 days
+    
+    # Fibonacci levels using last 60 days high and low rolling windows
     high_60 = df["High"].rolling(60).max()
     low_60 = df["Low"].rolling(60).min()
     diff = high_60 - low_60
@@ -37,6 +46,7 @@ def calculate_features(df):
     df["fib50.0"] = high_60 - 0.5 * diff
     df["fib61.8"] = high_60 - 0.618 * diff
     df["fib78.6"] = high_60 - 0.786 * diff
+
     df.dropna(inplace=True)
     return df
 
@@ -128,3 +138,4 @@ if st.button("Run Analysis"):
         st.markdown(df_res.to_markdown(index=False), unsafe_allow_html=True)
     else:
         st.write("No data found or error fetching stock data.")
+

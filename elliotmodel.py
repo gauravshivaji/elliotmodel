@@ -1,16 +1,17 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import ta
 import streamlit as st
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
+import random
 
-# Demo Nifty 500 tickers subset for testing limit & example
+# Demo subset of Nifty 500 tickers for testing
 NIFTY_500_TICKERS = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "LT.NS", "SBIN.NS", "KOTAKBANK.NS"
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS",
+    "ICICIBANK.NS", "LT.NS", "SBIN.NS", "KOTAKBANK.NS"
 ]
 
 def tradingview_link(ticker):
@@ -20,6 +21,7 @@ def tradingview_link(ticker):
 def fetch_data(ticker):
     df = yf.download(ticker, period="1y", interval="1d", progress=False)
     return df
+
 def calculate_features(df):
     df = df.copy()
     rsi_indicator = RSIIndicator(close=df["Close"], window=14)
@@ -37,7 +39,7 @@ def calculate_features(df):
     df["support"] = df["Low"].rolling(20).min()
     df["resistance"] = df["High"].rolling(20).max()
     
-    # Fibonacci levels using last 60 days high and low rolling windows
+    # Fibonacci retracement levels using rolling 60-day high/low
     high_60 = df["High"].rolling(60).max()
     low_60 = df["Low"].rolling(60).min()
     diff = high_60 - low_60
@@ -50,27 +52,27 @@ def calculate_features(df):
     df.dropna(inplace=True)
     return df
 
-# Label generation for training: Buy if next day close > current close else Sell (simple)
 def generate_labels(df):
     df = df.copy()
+    # Label = 1 if next day's close > current day's close else 0
     df['label'] = (df['Close'].shift(-1) > df['Close']).astype(int)
     df.dropna(inplace=True)
     return df
 
-# Placeholder small ML training model for demo
 def train_model(df):
-    features = ['Close', 'rsi', 'sma20', 'sma50', 'sma200', 'support', 'resistance', 'fib23.6', 'fib38.2', 'fib50.0', 'fib61.8', 'fib78.6']
+    features = ['Close', 'rsi', 'sma20', 'sma50', 'sma200', 
+                'support', 'resistance', 'fib23.6', 'fib38.2', 
+                'fib50.0', 'fib61.8', 'fib78.6']
     df = df[features + ['label']].dropna()
     X = df[features]
     y = df['label']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, 
+        test_size=0.2, random_state=42)
     model = RandomForestClassifier(n_estimators=50, random_state=42)
     model.fit(X_train, y_train)
     return model
 
-# Placeholder Elliott wave state (random for demo)
 def elliott_wave_state():
-    import random
     waves = ["impulsive", "corrective"]
     wave_nums = ["1", "2", "3", "4", "5", "a", "b", "c"]
     return random.choice(waves), random.choice(wave_nums)
@@ -81,9 +83,10 @@ def analyze_stock(ticker, model):
         return None
     df = calculate_features(df)
 
-    # Predict last available day
     last_row = df.iloc[-1]
-    features = ['Close', 'rsi', 'sma20', 'sma50', 'sma200', 'support', 'resistance', 'fib23.6', 'fib38.2', 'fib50.0', 'fib61.8', 'fib78.6']
+    features = ['Close', 'rsi', 'sma20', 'sma50', 'sma200', 
+                'support', 'resistance', 'fib23.6', 'fib38.2', 
+                'fib50.0', 'fib61.8', 'fib78.6']
     X_pred = last_row[features].values.reshape(1, -1)
     pred_prob = model.predict_proba(X_pred)[0][1]
     decision = "Buy" if pred_prob > 0.5 else "Sell"
@@ -112,30 +115,35 @@ def analyze_stock(ticker, model):
         "Fib78.6": round(last_row['fib78.6'], 2),
     }
 
-# Main Streamlit app
 st.title("Nifty 500 ML Wave & Fibonacci Screener")
 
-selected = st.multiselect("Select Stocks to Analyze", NIFTY_500_TICKERS, default=NIFTY_500_TICKERS[:5])
+selected = st.multiselect(
+    "Select Stocks to Analyze", NIFTY_500_TICKERS, default=NIFTY_500_TICKERS[:5]
+)
 
 if st.button("Run Analysis"):
-    # Train aggregated model on first stock for demo
-    df_train = fetch_data(selected[0])
-    df_train = calculate_features(df_train)
-    df_train = generate_labels(df_train)
-    model = train_model(df_train)
-
-    results = []
-    progress = st.progress(0)
-    for i, ticker in enumerate(selected):
-        res = analyze_stock(ticker, model)
-        if res is not None:
-            results.append(res)
-        progress.progress((i+1)/len(selected))
-    if results:
-        df_res = pd.DataFrame(results)
-        # Make TradingView link clickable in markdown
-        df_res['TradingView'] = df_res['TradingView'].apply(lambda x: f"[Chart]({x})")
-        st.markdown(df_res.to_markdown(index=False), unsafe_allow_html=True)
+    if not selected:
+        st.warning("Please select at least one stock to analyze.")
     else:
-        st.write("No data found or error fetching stock data.")
+        df_train = fetch_data(selected[0])
+        df_train = calculate_features(df_train)
+        df_train = generate_labels(df_train)
+        model = train_model(df_train)
 
+        results = []
+        progress = st.progress(0)
+        for i, ticker in enumerate(selected):
+            res = analyze_stock(ticker, model)
+            if res is not None:
+                results.append(res)
+            progress.progress((i + 1) / len(selected))
+
+        if results:
+            df_res = pd.DataFrame(results)
+            # Make TradingView link clickable in markdown tables
+            df_res['TradingView'] = df_res['TradingView'].apply(lambda x: f"[Chart]({x})")
+
+            # Display table using markdown for clickable links
+            st.markdown(df_res.to_markdown(index=False), unsafe_allow_html=True)
+        else:
+            st.write("No data found or error fetching stock data.")

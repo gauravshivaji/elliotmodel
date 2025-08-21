@@ -383,8 +383,8 @@ def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
     ew_only_sell = (ew_bear | is_impulse_down) & (results["RSI"] < 55)
 
     # Final signals (✅ fix: Buy_Point truly means buy, Sell_Point truly means sell)
-    results["Buy_Point"]  = results["Reversal_Buy"] | results["Trend_Buy"] | ew_only_buy
-    results["Sell_Point"] = base_sell_core | ew_only_sell
+    results["Sell_Point"]  = results["Reversal_Buy"] | results["Trend_Buy"] | ew_only_buy
+    results["Buy_Point"] = base_sell_core | ew_only_sell
 
     return results
 
@@ -652,4 +652,5 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 

@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import ta
 
-# ML imports
+# ML imports (optional)
 try:
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.metrics import classification_report, accuracy_score
@@ -13,6 +13,18 @@ try:
 except Exception:
     SKLEARN_OK = False
 
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="Nifty500 Buy/Sell Predictor + Elliott Wave", layout="wide")
+st.title("📊 Nifty500 Buy/Sell Predictor — Rules + Elliott Wave + ML")
+
+# ---------------- TICKERS ----------------
+NIFTY500_TICKERS = [
+    "360ONE.NS","3MINDIA.NS","ABB.NS","TIPSMUSIC.NS","ACC.NS","ACMESOLAR.NS","AIAENG.NS","APLAPOLLO.NS","AUBANK.NS","AWL.NS","AADHARHFC.NS",
+    # … add the rest of your tickers …
+    "ECLERX.NS",
+]
+
+# ---------------- UTIL ----------------
 def add_tradingview_links(df):
     df = df.copy()
     if "Ticker" in df.columns:
@@ -21,18 +33,30 @@ def add_tradingview_links(df):
         )
     return df
 
-# ---------------- CONFIG ----------------
-st.set_page_config(page_title="Nifty500 Buy/Sell Predictor", layout="wide")
-st.title("📊 Nifty500 Buy/Sell Predictor — Rules vs ML")
+class _TQDM:
+    def __init__(self, total, desc=""):
+        self.pb = st.progress(0, text=desc)
+        self.total = max(total, 1)
+        self.i = 0
+    def update(self):
+        self.i += 1
+        self.pb.progress(min(self.i / self.total, 1.0), text=f"{self.i}/{self.total}")
+    def close(self):
+        self.pb.empty()
 
-NIFTY500_TICKERS = [
-    "360ONE.NS","3MINDIA.NS","ABB.NS","TIPSMUSIC.NS","ACC.NS","ACMESOLAR.NS","AIAENG.NS","APLAPOLLO.NS","AUBANK.NS","AWL.NS","AADHARHFC.NS",
-    # Add all tickers from your list here...
-    "ECLERX.NS",
-]
+def stqdm(iterable, total=None, desc=""):
+    if total is None:
+        try:
+            total = len(iterable)
+        except Exception:
+            total = 100
+    bar = _TQDM(total=total, desc=desc)
+    for x in iterable:
+        yield x
+        bar.update()
+    bar.close()
 
-# ---------------- HELPERS ----------------
-
+# ---------------- DATA DOWNLOAD ----------------
 @st.cache_data(show_spinner=False)
 def download_data_multi(tickers, period="2y", interval="1d"):
     if isinstance(tickers, str):
@@ -51,11 +75,169 @@ def download_data_multi(tickers, period="2y", interval="1d"):
         return None
     out = pd.concat(frames, axis=1)
     if isinstance(out.columns, pd.MultiIndex):
+        # drop duplicate multiindex columns that sometimes appear
         idx = pd.MultiIndex.from_tuples(list(dict.fromkeys(out.columns.tolist())))
         out = out.loc[:, idx]
     return out
 
-def compute_features(df, sma_windows=(20, 50, 200), support_window=30):
+@st.cache_data(show_spinner=False)
+def load_history_for_ticker(ticker, period="5y", interval="1d"):
+    try:
+        df = yf.download(ticker, period=period, interval=interval, progress=False, threads=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# ---------------- ELLIOTT WAVE (ZigZag + Heuristics) ----------------
+def zigzag_pivots(close: pd.Series, pct=0.05, min_bars=5):
+    """
+    Dependency-free ZigZag: pivots when price reverses by >= pct from last pivot and min_bars elapsed.
+    Returns DataFrame with columns ['idx','price','type'] where type in {'H','L'}.
+    """
+    if close.isna().all() or len(close) < max(50, min_bars*4):
+        return pd.DataFrame(columns=["idx", "price", "type"])
+
+    c = close.values.astype(float)
+    idxs = close.index
+
+    piv = []  # tuples (index, price, 'H'/'L')
+
+    last_piv_i = 0
+    last_piv_p = c[0]
+    trend = None  # 'up' or 'down'
+    last_extreme_i = 0
+    last_extreme_p = c[0]
+
+    for i in range(1, len(c)):
+        # track most extreme in current leg
+        if trend in (None, 'up'):
+            if c[i] > last_extreme_p:
+                last_extreme_p = c[i]; last_extreme_i = i
+        if trend in (None, 'down'):
+            if c[i] < last_extreme_p:
+                last_extreme_p = c[i]; last_extreme_i = i
+
+        # reversal checks (percent from extreme and spacing)
+        if trend in (None, 'up'):
+            # reverse to down if drop from extreme exceeds pct
+            if last_extreme_p != 0:
+                dd = (c[i] - last_extreme_p) / last_extreme_p
+            else:
+                dd = 0
+            if dd <= -pct and (i - last_piv_i) >= min_bars:
+                # mark High pivot at last extreme
+                piv.append((idxs[last_extreme_i], float(last_extreme_p), 'H'))
+                last_piv_i = last_extreme_i; last_piv_p = last_extreme_p
+                trend = 'down'
+                last_extreme_i = i; last_extreme_p = c[i]
+        if trend in (None, 'down'):
+            if last_extreme_p != 0:
+                uu = (c[i] - last_extreme_p) / last_extreme_p
+            else:
+                uu = 0
+            if uu >= pct and (i - last_piv_i) >= min_bars:
+                # mark Low pivot at last extreme
+                piv.append((idxs[last_extreme_i], float(last_extreme_p), 'L'))
+                last_piv_i = last_extreme_i; last_piv_p = last_extreme_p
+                trend = 'up'
+                last_extreme_i = i; last_extreme_p = c[i]
+
+    # Ensure alternating types and keep more extreme if duplicates
+    if len(piv) >= 2:
+        cleaned = [piv[0]]
+        for i in range(1, len(piv)):
+            t_i = piv[i][2]
+            t_prev = cleaned[-1][2]
+            if t_i == t_prev:
+                prev = cleaned[-1]
+                if t_i == 'H':
+                    better = piv[i][1] > prev[1]
+                else:
+                    better = piv[i][1] < prev[1]
+                if better:
+                    cleaned[-1] = piv[i]
+            else:
+                cleaned.append(piv[i])
+        piv = cleaned
+
+    if not piv:
+        return pd.DataFrame(columns=["idx", "price", "type"])
+    idx, price, typ = zip(*piv)
+    return pd.DataFrame({"idx": list(idx), "price": list(price), "type": list(typ)})
+
+def fib_okay(a, b, ratio, tol=0.18):
+    """Check if |a/b - ratio| within tolerance (basic fib confluence)."""
+    if b == 0 or np.isnan(a) or np.isnan(b):
+        return False
+    return abs((a / b) - ratio) <= tol * ratio
+
+def elliott_phase_from_pivots(pivots: pd.DataFrame):
+    """
+    Compact heuristic:
+    - Try to interpret last 5 alternating pivots as an impulse up/down.
+    - Validate HH/HL (up) or LL/LH (down) + rough Fib relations for waves 2 and 4.
+    - Fallback: last 3 pivots as ABC correction up/down.
+    Returns dict: phase {'ImpulseUp','ImpulseDown','CorrectionUp','CorrectionDown','Unknown'},
+                  wave_no (5 or 3), bullish, bearish.
+    """
+    out = {"phase": "Unknown", "wave_no": 0, "bullish": False, "bearish": False}
+    if pivots.empty:
+        return out
+
+    # Try last 5
+    if len(pivots) >= 5:
+        p5 = pivots.iloc[-5:].reset_index(drop=True)
+        alt = all(p5.loc[i, "type"] != p5.loc[i-1, "type"] for i in range(1, 5))
+        if alt:
+            prices = p5["price"].values
+            types = p5["type"].values
+            up_pattern = (types.tolist() == ['L','H','L','H','L'])
+            down_pattern = (types.tolist() == ['H','L','H','L','H'])
+            if up_pattern:
+                hh_ok = prices[3] > prices[1]
+                hl_ok = prices[4] > prices[2]
+                w1 = prices[1] - prices[0]
+                w2 = prices[1] - prices[2]
+                w3 = prices[3] - prices[2]
+                w4 = prices[3] - prices[4]
+                fib2 = fib_okay(w2, w1, 0.382) or fib_okay(w2, w1, 0.5) or fib_okay(w2, w1, 0.618)
+                fib4 = fib_okay(w4, w3, 0.382) or fib_okay(w4, w3, 0.5) or fib_okay(w4, w3, 0.618)
+                if hh_ok and hl_ok and (fib2 or fib4):
+                    out.update({"phase": "ImpulseUp", "wave_no": 5, "bullish": True})
+                    return out
+            if down_pattern:
+                ll_ok = prices[3] < prices[1]
+                lh_ok = prices[4] < prices[2]
+                w1 = prices[0] - prices[1]
+                w2 = prices[2] - prices[1]
+                w3 = prices[2] - prices[3]
+                w4 = prices[4] - prices[3]
+                fib2 = fib_okay(w2, w1, 0.382) or fib_okay(w2, w1, 0.5) or fib_okay(w2, w1, 0.618)
+                fib4 = fib_okay(w4, w3, 0.382) or fib_okay(w4, w3, 0.5) or fib_okay(w4, w3, 0.618)
+                if ll_ok and lh_ok and (fib2 or fib4):
+                    out.update({"phase": "ImpulseDown", "wave_no": 5, "bearish": True})
+                    return out
+
+    # Fallback: last 3 (ABC)
+    if len(pivots) >= 3:
+        p3 = pivots.iloc[-3:].reset_index(drop=True)
+        alt3 = all(p3.loc[i, "type"] != p3.loc[i-1, "type"] for i in range(1, 3))
+        if alt3:
+            t = p3["type"].tolist()
+            if t == ['L','H','L']:
+                out.update({"phase": "CorrectionUp", "wave_no": 3, "bullish": True})
+            elif t == ['H','L','H']:
+                out.update({"phase": "CorrectionDown", "wave_no": 3, "bearish": True})
+    return out
+
+def add_elliott_features_core(df_close: pd.Series, pct=0.05, min_bars=5):
+    piv = zigzag_pivots(df_close, pct=pct, min_bars=min_bars)
+    phase = elliott_phase_from_pivots(piv)
+    return phase, piv
+
+# ---------------- FEATURE ENGINEERING ----------------
+def compute_features(df, sma_windows=(20, 50, 200), support_window=30, zz_pct=0.05, zz_min_bars=5):
+    # Flatten MultiIndex columns if any
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
@@ -64,33 +246,63 @@ def compute_features(df, sma_windows=(20, 50, 200), support_window=30):
 
     df = df.copy()
 
+    # RSI
     try:
         df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=14).rsi()
     except Exception:
         df["RSI"] = np.nan
 
+    # SMAs
     for win in sma_windows:
         df[f"SMA{win}"] = df["Close"].rolling(window=win, min_periods=1).mean()
 
+    # Support (simple rolling min)
     df["Support"] = df["Close"].rolling(window=support_window, min_periods=1).min()
 
+    # Divergences (very lightweight)
     df["RSI_Direction"] = df["RSI"].diff(5)
     df["Price_Direction"] = df["Close"].diff(5)
     df["Bullish_Div"] = (df["RSI_Direction"] > 0) & (df["Price_Direction"] < 0)
     df["Bearish_Div"] = (df["RSI_Direction"] < 0) & (df["Price_Direction"] > 0)
 
+    # Returns and distances
     for w in (1, 3, 5, 10):
         df[f"Ret_{w}"] = df["Close"].pct_change(w)
 
     for win in sma_windows:
         df[f"Dist_SMA{win}"] = (df["Close"] - df[f"SMA{win}"]) / df[f"SMA{win}"]
 
+    # Slopes
     for col in ["RSI"] + [f"SMA{w}" for w in sma_windows]:
         df[f"{col}_slope"] = df[col].diff()
+
+    # --- Elliott features ---
+    try:
+        phase, piv = add_elliott_features_core(df["Close"], pct=zz_pct, min_bars=zz_min_bars)
+        phase_map = {
+            "ImpulseUp": 1, "ImpulseDown": -1,
+            "CorrectionUp": 2, "CorrectionDown": -2,
+            "Unknown": 0
+        }
+        df["Elliott_Phase_Code"] = phase_map.get(phase["phase"], 0)
+        df["Elliott_Wave_No"] = int(phase.get("wave_no", 0))
+        df["Elliott_Bullish"] = bool(phase.get("bullish", False))
+        df["Elliott_Bearish"] = bool(phase.get("bearish", False))
+        # numeric versions for ML selection
+        df["Elliott_Bullish_Int"] = df["Elliott_Bullish"].astype(int)
+        df["Elliott_Bearish_Int"] = df["Elliott_Bearish"].astype(int)
+    except Exception:
+        df["Elliott_Phase_Code"] = 0
+        df["Elliott_Wave_No"] = 0
+        df["Elliott_Bullish"] = False
+        df["Elliott_Bearish"] = False
+        df["Elliott_Bullish_Int"] = 0
+        df["Elliott_Bearish_Int"] = 0
+
     return df
 
-def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_window):
-    df = compute_features(ticker_df, sma_windows, support_window).dropna()
+def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_window, zz_pct, zz_min_bars):
+    df = compute_features(ticker_df, sma_windows, support_window, zz_pct, zz_min_bars).dropna()
     if df.empty:
         return None
     latest = df.iloc[-1]
@@ -102,9 +314,13 @@ def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_windo
         **{f"SMA{w}": float(latest.get(f"SMA{w}", np.nan)) for w in sma_windows},
         "Bullish_Div": bool(latest["Bullish_Div"]),
         "Bearish_Div": bool(latest["Bearish_Div"]),
+        "Elliott_Phase_Code": int(latest.get("Elliott_Phase_Code", 0)),
+        "Elliott_Wave_No": int(latest.get("Elliott_Wave_No", 0)),
+        "Elliott_Bullish_Int": int(latest.get("Elliott_Bullish_Int", 0)),
+        "Elliott_Bearish_Int": int(latest.get("Elliott_Bearish_Int", 0)),
     }
 
-def get_features_for_all(tickers, sma_windows, support_window):
+def get_features_for_all(tickers, sma_windows, support_window, zz_pct, zz_min_bars):
     multi_df = download_data_multi(tickers)
     if multi_df is None or multi_df.empty:
         return pd.DataFrame()
@@ -118,53 +334,61 @@ def get_features_for_all(tickers, sma_windows, support_window):
             tdf = multi_df[ticker].dropna()
             if tdf.empty:
                 continue
-            feats = get_latest_features_for_ticker(tdf, ticker, sma_windows, support_window)
+            feats = get_latest_features_for_ticker(tdf, ticker, sma_windows, support_window, zz_pct, zz_min_bars)
             if feats:
                 features_list.append(feats)
     else:
-        feats = get_latest_features_for_ticker(multi_df.dropna(), tickers[0], sma_windows, support_window)
+        feats = get_latest_features_for_ticker(multi_df.dropna(), tickers[0], sma_windows, support_window, zz_pct, zz_min_bars)
         if feats:
             features_list.append(feats)
     return pd.DataFrame(features_list)
 
-# ---------------- RULE-BASED STRATEGY ----------------
+# ---------------- RULE-BASED STRATEGY (+ Elliott) ----------------
 def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
     if df.empty:
         return df
     results = df.copy()
 
-    results["Reversal_Buy"] = (
+    # Core patterns
+    reversal_buy_core = (
         (results["RSI"] < rsi_buy) &
         (results["Bullish_Div"]) &
         (np.abs(results["Close"] - results["Support"]) < 0.03 * results["Close"]) &
         (results["Close"] > results["SMA20"])
     )
 
-    results["Trend_Buy"] = (
+    trend_buy_core = (
         (results["Close"] > results["SMA20"]) &
         (results["SMA20"] > results["SMA50"]) &
         (results["SMA50"] > results["SMA200"]) &
         (results["RSI"] > 50)
     )
 
-    results["Sell_Point"] = results["Reversal_Buy"] | results["Trend_Buy"]  # Buy signals
-
-    results["Buy_Point"] = (
+    base_sell_core = (
         ((results["RSI"] > rsi_sell) & (results["Bearish_Div"])) |
         (results["Close"] < results["Support"]) |
         ((results["SMA20"] < results["SMA50"]) & (results["SMA50"] < results["SMA200"]))
     )
+
+    # Elliott confirmations
+    ew_bull = results.get("Elliott_Bullish_Int", 0) == 1
+    ew_bear = results.get("Elliott_Bearish_Int", 0) == 1
+    is_impulse_up = results.get("Elliott_Phase_Code", 0) == 1
+    is_impulse_down = results.get("Elliott_Phase_Code", 0) == -1
+
+    results["Reversal_Buy"] = reversal_buy_core & (ew_bull | is_impulse_up)
+    results["Trend_Buy"] = trend_buy_core & (ew_bull | is_impulse_up)
+    ew_only_buy = (ew_bull | is_impulse_up) & (results["RSI"] > 45) & (results["Close"] > results["SMA20"])
+
+    ew_only_sell = (ew_bear | is_impulse_down) & (results["RSI"] < 55)
+
+    # Final signals (✅ fix: Buy_Point truly means buy, Sell_Point truly means sell)
+    results["Buy_Point"]  = results["Reversal_Buy"] | results["Trend_Buy"] | ew_only_buy
+    results["Sell_Point"] = base_sell_core | ew_only_sell
+
     return results
 
-# ---------------- ML PIPELINE ----------------
-@st.cache_data(show_spinner=False)
-def load_history_for_ticker(ticker, period="5y", interval="1d"):
-    try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, threads=True)
-        return df
-    except Exception:
-        return pd.DataFrame()
-
+# ---------------- LABELS FOR ML ----------------
 def label_from_rule_based(df, rsi_buy=30, rsi_sell=70):
     rules = predict_buy_sell_rule(df, rsi_buy=rsi_buy, rsi_sell=rsi_sell)
     label = pd.Series(0, index=rules.index, dtype=int)
@@ -179,12 +403,14 @@ def label_from_future_returns(df, horizon=60, buy_thr=0.03, sell_thr=-0.03):
     label[fut_ret <= sell_thr] = -1
     return label
 
+# ---------------- ML DATASET ----------------
 def build_ml_dataset_for_tickers(
     tickers, sma_windows, support_window,
     label_mode="rule",
     horizon=60, buy_thr=0.03, sell_thr=-0.03,
     rsi_buy=30, rsi_sell=70,
-    min_rows=250
+    min_rows=250,
+    zz_pct=0.05, zz_min_bars=5
 ):
     X_list, y_list, meta_list = [], [], []
     feature_cols = None
@@ -194,7 +420,7 @@ def build_ml_dataset_for_tickers(
         if hist is None or hist.empty or len(hist) < min_rows:
             continue
 
-        feat = compute_features(hist, sma_windows, support_window)
+        feat = compute_features(hist, sma_windows, support_window, zz_pct, zz_min_bars)
         if feat.empty:
             continue
 
@@ -207,6 +433,7 @@ def build_ml_dataset_for_tickers(
         if data.empty:
             continue
 
+        # Ensure EW ints are present (they are numeric already)
         drop_cols = set(["Label", "Support", "Bullish_Div", "Bearish_Div"])
         use = data.select_dtypes(include=[np.number]).drop(columns=list(drop_cols & set(data.columns)), errors="ignore")
 
@@ -249,11 +476,11 @@ def train_rf_classifier(X, y, random_state=42):
     report = classification_report(y_test, y_pred, zero_division=0, output_dict=False)
     return clf, acc, report
 
-def latest_feature_row_for_ticker(ticker, sma_windows, support_window, feature_cols):
+def latest_feature_row_for_ticker(ticker, sma_windows, support_window, feature_cols, zz_pct, zz_min_bars):
     hist = load_history_for_ticker(ticker, period="3y", interval="1d")
     if hist is None or hist.empty:
         return None
-    feat = compute_features(hist, sma_windows, support_window).dropna()
+    feat = compute_features(hist, sma_windows, support_window, zz_pct, zz_min_bars).dropna()
     if feat.empty:
         return None
     use = feat.select_dtypes(include=[np.number])
@@ -263,8 +490,7 @@ def latest_feature_row_for_ticker(ticker, sma_windows, support_window, feature_c
     row = row[feature_cols]
     return row
 
-# -------------- Streamlit UI --------------
-
+# ---------------- SIDEBAR ----------------
 with st.sidebar:
     st.header("Settings")
 
@@ -278,7 +504,11 @@ with st.sidebar:
     support_window = st.number_input("Support Period (days)", 5, 200, 30)
 
     st.markdown("---")
+    st.subheader("Elliott (ZigZag) Tuning")
+    zz_pct = st.slider("ZigZag reversal (%)", 2, 12, 5, help="Sensitivity for swing detection (5% = 0.05).") / 100.0
+    zz_min_bars = st.slider("Min bars between pivots", 3, 15, 5)
 
+    st.markdown("---")
     label_mode = st.radio("ML Labeling Mode", ["Rule-based (teach the rules)", "Future Returns"], index=0)
 
     if label_mode == "Rule-based (teach the rules)":
@@ -299,34 +529,12 @@ with st.sidebar:
 
     run_analysis = st.button("Run Analysis")
 
-class _TQDM:
-    def __init__(self, total, desc=""):
-        self.pb = st.progress(0, text=desc)
-        self.total = max(total, 1)
-        self.i = 0
-    def update(self):
-        self.i += 1
-        self.pb.progress(min(self.i / self.total, 1.0), text=f"{self.i}/{self.total}")
-    def close(self):
-        self.pb.empty()
-
-def stqdm(iterable, total=None, desc=""):
-    if total is None:
-        try:
-            total = len(iterable)
-        except Exception:
-            total = 100
-    bar = _TQDM(total=total, desc=desc)
-    for x in iterable:
-        yield x
-        bar.update()
-    bar.close()
-
+# ---------------- MAIN ----------------
 if run_analysis:
     sma_tuple = (sma_w1, sma_w2, sma_w3)
 
-    with st.spinner("Fetching data & computing rule-based features..."):
-        feats = get_features_for_all(selected_tickers, sma_tuple, support_window)
+    with st.spinner("Fetching data & computing rule-based + Elliott features..."):
+        feats = get_features_for_all(selected_tickers, sma_tuple, support_window, zz_pct, zz_min_bars)
         if feats is None or feats.empty:
             st.error("No valid data for selected tickers.")
         else:
@@ -343,38 +551,38 @@ if run_analysis:
         if feats.empty:
             st.info("No rule-based buy signals.")
         else:
-            df_buy = preds_rule[preds_rule["Buy_Point"]]
+            df_buy = preds_rule[preds_rule["Buy_Point"]].copy()
+            # add TradingView link next to ticker
             df_buy["TradingView"] = df_buy["Ticker"].apply(lambda x: f'<a href="https://in.tradingview.com/chart/?symbol=NSE%3A{x.replace(".NS","")}" target="_blank">📈 Chart</a>')
-            cols = df_buy.columns.tolist()
-            if "Ticker" in cols and "TradingView" in cols:
-                cols.remove("TradingView")
-                ticker_index = cols.index("Ticker")
-                cols.insert(ticker_index + 1, "TradingView")
-                df_buy = df_buy[cols]
-            st.write(df_buy.to_html(escape=False, index=False), unsafe_allow_html=True)
+            # Recent useful columns
+            show_cols = ["Ticker","TradingView","Close","RSI","Elliott_Phase_Code","Elliott_Wave_No","Elliott_Bullish_Int","Reversal_Buy","Trend_Buy"]
+            cols = [c for c in show_cols if c in df_buy.columns] + [c for c in df_buy.columns if c not in show_cols]
+            st.write(df_buy[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
 
     with tab2:
         if feats.empty:
             st.info("No rule-based sell signals.")
         else:
-            df_sell = preds_rule[preds_rule["Sell_Point"]]
+            df_sell = preds_rule[preds_rule["Sell_Point"]].copy()
             df_sell["TradingView"] = df_sell["Ticker"].apply(lambda x: f'<a href="https://in.tradingview.com/chart/?symbol=NSE%3A{x.replace(".NS","")}" target="_blank">📈 Chart</a>')
-            cols = df_sell.columns.tolist()
-            if "Ticker" in cols and "TradingView" in cols:
-                cols.remove("TradingView")
-                ticker_index = cols.index("Ticker")
-                cols.insert(ticker_index + 1, "TradingView")
-                df_sell = df_sell[cols]
-            st.write(df_sell.to_html(escape=False, index=False), unsafe_allow_html=True)
+            show_cols = ["Ticker","TradingView","Close","RSI","Elliott_Phase_Code","Elliott_Wave_No","Elliott_Bearish_Int"]
+            cols = [c for c in show_cols if c in df_sell.columns] + [c for c in df_sell.columns if c not in show_cols]
+            st.write(df_sell[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
 
     with tab3:
         ticker_for_chart = st.selectbox("Chart Ticker", selected_tickers)
         chart_df = yf.download(ticker_for_chart, period="6mo", interval="1d", progress=False, threads=True)
         if not chart_df.empty:
-            chart_df = compute_features(chart_df, sma_tuple, support_window).dropna()
+            chart_df = compute_features(chart_df, sma_tuple, support_window, zz_pct, zz_min_bars).dropna()
             if not chart_df.empty:
                 st.line_chart(chart_df[["Close", f"SMA{sma_w1}", f"SMA{sma_w2}", f"SMA{sma_w3}"]])
                 st.line_chart(chart_df[["RSI"]])
+
+                latest = chart_df.iloc[-1]
+                phase_code = int(latest.get("Elliott_Phase_Code", 0))
+                phase_text = {1:"ImpulseUp", -1:"ImpulseDown", 2:"CorrectionUp", -2:"CorrectionDown", 0:"Unknown"}.get(phase_code, "Unknown")
+                wave_no = int(latest.get("Elliott_Wave_No", 0))
+                st.caption(f"🌀 Elliott Phase: **{phase_text}**  |  Wave#: **{wave_no}**  |  ZigZag: {zz_pct*100:.1f}% / {zz_min_bars} bars")
         else:
             st.warning("No chart data available.")
 
@@ -386,12 +594,14 @@ if run_analysis:
                 if label_mode == "Rule-based (teach the rules)":
                     X, y, feature_cols, tickers_series = build_ml_dataset_for_tickers(
                         selected_tickers, sma_tuple, support_window,
-                        label_mode="rule", rsi_buy=rsi_buy, rsi_sell=rsi_sell
+                        label_mode="rule", rsi_buy=rsi_buy, rsi_sell=rsi_sell,
+                        zz_pct=zz_pct, zz_min_bars=zz_min_bars
                     )
                 else:
                     X, y, feature_cols, tickers_series = build_ml_dataset_for_tickers(
                         selected_tickers, sma_tuple, support_window,
-                        label_mode="future", horizon=ml_horizon, buy_thr=ml_buy_thr, sell_thr=ml_sell_thr
+                        label_mode="future", horizon=ml_horizon, buy_thr=ml_buy_thr, sell_thr=ml_sell_thr,
+                        zz_pct=zz_pct, zz_min_bars=zz_min_bars
                     )
 
                 if X.empty or y.empty:
@@ -404,7 +614,7 @@ if run_analysis:
 
                     rows = []
                     for t in stqdm(selected_tickers, desc="Scoring", total=len(selected_tickers)):
-                        row = latest_feature_row_for_ticker(t, sma_tuple, support_window, feature_cols)
+                        row = latest_feature_row_for_ticker(t, sma_tuple, support_window, feature_cols, zz_pct, zz_min_bars)
                         if row is None:
                             continue
                         proba = clf.predict_proba(row)[0] if hasattr(clf, "predict_proba") else None
@@ -417,6 +627,7 @@ if run_analysis:
                             "Prob_Sell": float(proba[list(clf.classes_).index(-1)]) if proba is not None and -1 in clf.classes_ else np.nan,
                         })
                     ml_df = pd.DataFrame(rows).sort_values(["ML_Pred", "Prob_Buy"], ascending=[True, False])
+
                     def tradingview_link(ticker):
                         return f"https://in.tradingview.com/chart/?symbol=NSE%3A{ticker.replace('.NS','')}"
                     ml_df["TradingView"] = ml_df["Ticker"].apply(tradingview_link)
@@ -441,4 +652,3 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
-

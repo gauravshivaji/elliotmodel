@@ -363,10 +363,12 @@ def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_windo
         **{f"SMA{w}": float(latest.get(f"SMA{w}", np.nan)) for w in sma_windows},
         "Bullish_Div": bool(latest["Bullish_Div"]),
         "Bearish_Div": bool(latest["Bearish_Div"]),
-        "Elliott_Phase_Code": int(latest.get("Elliott_Phase_Code", 0)),
-        "Elliott_Wave_No": int(latest.get("Elliott_Wave_No", 0)),
-        "Elliott_Bullish_Int": int(latest.get("Elliott_Bullish_Int", 0)),
-        "Elliott_Bearish_Int": int(latest.get("Elliott_Bearish_Int", 0)),
+        "Elliott_Phase_Code": int(latest["Elliott_Phase_Code"]) if "Elliott_Phase_Code" in latest else 0,
+        "Elliott_Wave_No": int(latest["Elliott_Wave_No"]) if "Elliott_Wave_No" in latest else 0,
+        "Elliott_Bullish_Int": int(latest["Elliott_Bullish_Int"]) if "Elliott_Bullish_Int" in latest else 0,
+        "Elliott_Bearish_Int": int(latest["Elliott_Bearish_Int"]) if "Elliott_Bearish_Int" in latest else 0,
+
+        
     }
 
 def get_features_for_all(tickers, sma_windows, support_window, zz_pct, zz_min_bars):
@@ -709,6 +711,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 

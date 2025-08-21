@@ -652,3 +652,4 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+

@@ -393,51 +393,48 @@ def get_features_for_all(tickers, sma_windows, support_window, zz_pct, zz_min_ba
     return pd.DataFrame(features_list)
 
 # ---------------- RULE-BASED STRATEGY (+ Elliott) ----------------
-def predict_buy_sell_rule(df, rsi_buy=35, rsi_sell=65):
+def predict_buy_sell_rule(df, rsi_buy=40, rsi_sell=60):
     if df.empty:
         return df
     results = df.copy()
 
-    # --- Core patterns ---
+    # --- Core patterns (relaxed thresholds) ---
     reversal_buy_core = (
         (results["RSI"] < rsi_buy) &
-        (results.get("Bullish_Div", False)) &  # safeguard if column missing
-        (np.abs(results["Close"] - results.get("Support", results["Close"])) < 0.05 * results["Close"]) &
+        (results.get("Bullish_Div", True)) &  # default True if missing
+        (np.abs(results["Close"] - results.get("Support", results["Close"])) < 0.1 * results["Close"]) &
         (results["Close"] > results["SMA20"])
     )
 
     trend_buy_core = (
         (results["Close"] > results["SMA20"]) &
         (results["SMA20"] > results["SMA50"]) &
-        (results["SMA50"] > results["SMA200"]) &
-        (results["RSI"] > 45)
+        (results["RSI"] > 40)  # lower threshold
     )
 
     base_sell_core = (
-        ((results["RSI"] > rsi_sell) & (results.get("Bearish_Div", False))) |
+        ((results["RSI"] > rsi_sell) & (results.get("Bearish_Div", True))) |
         (results["Close"] < results.get("Support", results["Close"])) |
         ((results["SMA20"] < results["SMA50"]) & (results["SMA50"] < results["SMA200"]))
     )
 
-    # --- Elliott confirmations ---
-    ew_bull = results.get("Elliott_Bullish_Int", 0) == 1
-    ew_bear = results.get("Elliott_Bearish_Int", 0) == 1
-    is_impulse_up = results.get("Elliott_Phase_Code", 0) == 1
-    is_impulse_down = results.get("Elliott_Phase_Code", 0) == -1
+    # --- Elliott confirmations (safe defaults) ---
+    ew_bull = (results.get("Elliott_Bullish_Int", 0) == 1) | (results.get("Elliott_Phase_Code", 0) == 1)
+    ew_bear = (results.get("Elliott_Bearish_Int", 0) == 1) | (results.get("Elliott_Phase_Code", 0) == -1)
 
     # --- Buy/Sell refinements ---
-    results["Reversal_Buy"] = reversal_buy_core & (ew_bull | is_impulse_up)
-    results["Trend_Buy"] = trend_buy_core & (ew_bull | is_impulse_up)
+    results["Reversal_Buy"] = reversal_buy_core & ew_bull
+    results["Trend_Buy"] = trend_buy_core & ew_bull
 
     ew_only_buy = (
-        (ew_bull | is_impulse_up) &
-        (results["RSI"].between(40, 60)) &  # moderate RSI zone
+        ew_bull &
+        (results["RSI"].between(35, 65)) &  # much wider zone
         (results["Close"] > results["SMA20"])
     )
 
     ew_only_sell = (
-        (ew_bear | is_impulse_down) &
-        (results["RSI"] > 55)  # slightly overbought in bearish wave
+        ew_bear &
+        (results["RSI"] > 50)  # less strict
     )
 
     # --- Final signals ---
@@ -445,6 +442,7 @@ def predict_buy_sell_rule(df, rsi_buy=35, rsi_sell=65):
     results["Sell_Point"] = base_sell_core | ew_only_sell
 
     return results
+
 
 
 # ---------------- LABELS FOR ML ----------------
@@ -711,6 +709,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 

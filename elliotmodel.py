@@ -350,6 +350,36 @@ def compute_features(df, sma_windows=(20, 50, 200), support_window=30, zz_pct=0.
 
     return df
 
+from scipy.signal import find_peaks
+
+def add_elliott_features(df):
+    df = df.copy()
+
+    # Detect swing highs/lows
+    peaks, _ = find_peaks(df["Close"], distance=5)
+    troughs, _ = find_peaks(-df["Close"], distance=5)
+
+    # Initialize Elliott columns
+    df["Elliott_Wave_No"] = 0
+    df["Elliott_Phase_Code"] = 0
+    df["Elliott_Bullish_Int"] = 0
+    df["Elliott_Bearish_Int"] = 0
+
+    # Mark peaks = bearish impulse
+    for i, p in enumerate(peaks):
+        df.loc[p, "Elliott_Wave_No"] = (i % 5) + 1
+        df.loc[p, "Elliott_Phase_Code"] = -1
+        df.loc[p, "Elliott_Bearish_Int"] = 1
+
+    # Mark troughs = bullish impulse
+    for i, t in enumerate(troughs):
+        df.loc[t, "Elliott_Wave_No"] = (i % 5) + 1
+        df.loc[t, "Elliott_Phase_Code"] = 1
+        df.loc[t, "Elliott_Bullish_Int"] = 1
+
+    return df
+
+
 def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_window, zz_pct, zz_min_bars):
     df = compute_features(ticker_df, sma_windows, support_window, zz_pct, zz_min_bars).dropna()
     if df.empty:
@@ -711,6 +741,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 

@@ -393,7 +393,7 @@ def get_features_for_all(tickers, sma_windows, support_window, zz_pct, zz_min_ba
     return pd.DataFrame(features_list)
 
 # ---------------- RULE-BASED STRATEGY (+ Elliott) ----------------
-def predict_buy_sell_rule(df, rsi_buy=40, rsi_sell=60):
+def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
     if df.empty:
         return df
     results = df.copy()
@@ -438,8 +438,8 @@ def predict_buy_sell_rule(df, rsi_buy=40, rsi_sell=60):
     )
 
     # --- Final signals ---
-    results["Buy_Point"]  = results["Reversal_Buy"] | results["Trend_Buy"] | ew_only_buy
-    results["Sell_Point"] = base_sell_core | ew_only_sell
+    results["Sell_Point"]  = results["Reversal_Buy"] | results["Trend_Buy"] | ew_only_buy
+    results["Buy_Point"] = base_sell_core | ew_only_sell
 
     return results
 
@@ -709,6 +709,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 

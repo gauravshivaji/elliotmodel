@@ -393,16 +393,16 @@ def get_features_for_all(tickers, sma_windows, support_window, zz_pct, zz_min_ba
     return pd.DataFrame(features_list)
 
 # ---------------- RULE-BASED STRATEGY (+ Elliott) ----------------
-def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
+def predict_buy_sell_rule(df, rsi_buy=35, rsi_sell=65):
     if df.empty:
         return df
     results = df.copy()
 
-    # Core patterns
+    # --- Core patterns ---
     reversal_buy_core = (
         (results["RSI"] < rsi_buy) &
-        (results["Bullish_Div"]) &
-        (np.abs(results["Close"] - results["Support"]) < 0.03 * results["Close"]) &
+        (results.get("Bullish_Div", False)) &  # safeguard if column missing
+        (np.abs(results["Close"] - results.get("Support", results["Close"])) < 0.05 * results["Close"]) &
         (results["Close"] > results["SMA20"])
     )
 
@@ -410,32 +410,42 @@ def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
         (results["Close"] > results["SMA20"]) &
         (results["SMA20"] > results["SMA50"]) &
         (results["SMA50"] > results["SMA200"]) &
-        (results["RSI"] > 50)
+        (results["RSI"] > 45)
     )
 
     base_sell_core = (
-        ((results["RSI"] > rsi_sell) & (results["Bearish_Div"])) |
-        (results["Close"] < results["Support"]) |
+        ((results["RSI"] > rsi_sell) & (results.get("Bearish_Div", False))) |
+        (results["Close"] < results.get("Support", results["Close"])) |
         ((results["SMA20"] < results["SMA50"]) & (results["SMA50"] < results["SMA200"]))
     )
 
-    # Elliott confirmations
+    # --- Elliott confirmations ---
     ew_bull = results.get("Elliott_Bullish_Int", 0) == 1
     ew_bear = results.get("Elliott_Bearish_Int", 0) == 1
     is_impulse_up = results.get("Elliott_Phase_Code", 0) == 1
     is_impulse_down = results.get("Elliott_Phase_Code", 0) == -1
 
+    # --- Buy/Sell refinements ---
     results["Reversal_Buy"] = reversal_buy_core & (ew_bull | is_impulse_up)
     results["Trend_Buy"] = trend_buy_core & (ew_bull | is_impulse_up)
-    ew_only_buy = (ew_bull | is_impulse_up) & (results["RSI"] > 45) & (results["Close"] > results["SMA20"])
 
-    ew_only_sell = (ew_bear | is_impulse_down) & (results["RSI"] < 55)
+    ew_only_buy = (
+        (ew_bull | is_impulse_up) &
+        (results["RSI"].between(40, 60)) &  # moderate RSI zone
+        (results["Close"] > results["SMA20"])
+    )
 
-    # Final signals (✅ fix: Buy_Point truly means buy, Sell_Point truly means sell)
-    results["Sell_Point"]  = results["Reversal_Buy"] | results["Trend_Buy"] | ew_only_buy
-    results["Buy_Point"] = base_sell_core | ew_only_sell
+    ew_only_sell = (
+        (ew_bear | is_impulse_down) &
+        (results["RSI"] > 55)  # slightly overbought in bearish wave
+    )
+
+    # --- Final signals ---
+    results["Buy_Point"]  = results["Reversal_Buy"] | results["Trend_Buy"] | ew_only_buy
+    results["Sell_Point"] = base_sell_core | ew_only_sell
 
     return results
+
 
 # ---------------- LABELS FOR ML ----------------
 def label_from_rule_based(df, rsi_buy=30, rsi_sell=70):
@@ -701,6 +711,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 

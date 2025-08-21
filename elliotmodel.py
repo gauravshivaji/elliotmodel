@@ -27,7 +27,7 @@ st.title("📊 Nifty500 Buy/Sell Predictor — Rules vs ML")
 
 NIFTY500_TICKERS = [
     "360ONE.NS","3MINDIA.NS","ABB.NS","TIPSMUSIC.NS","ACC.NS","ACMESOLAR.NS","AIAENG.NS","APLAPOLLO.NS","AUBANK.NS","AWL.NS","AADHARHFC.NS",
-    # ... full list truncated for brevity; use your full list here ...
+    # Add all tickers from your list here...
     "ECLERX.NS",
 ]
 
@@ -104,95 +104,12 @@ def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_windo
         "Bearish_Div": bool(latest["Bearish_Div"]),
     }
 
-# ------------ Elliott Wave Helpers ------------
-
-def compute_zigzag(df, threshold=5):
-    close = df["Close"]
-    zigzag = [np.nan] * len(df)
-
-    last_pivot = close.iloc[0]
-    last_pivot_idx = 0
-    trend = None
-
-    for i in range(1, len(df)):
-        change_pct = (close.iloc[i] - last_pivot) / last_pivot * 100
-
-        if trend is None:
-            if abs(change_pct) >= threshold:
-                trend = "up" if change_pct > 0 else "down"
-                last_pivot = close.iloc[i]
-                last_pivot_idx = i
-                zigzag[last_pivot_idx] = last_pivot
-        elif trend == "up":
-            if close.iloc[i] > last_pivot:
-                last_pivot = close.iloc[i]
-                last_pivot_idx = i
-                zigzag[last_pivot_idx] = last_pivot
-            elif (last_pivot - close.iloc[i]) / last_pivot * 100 >= threshold:
-                trend = "down"
-                last_pivot = close.iloc[i]
-                last_pivot_idx = i
-                zigzag[last_pivot_idx] = last_pivot
-        elif trend == "down":
-            if close.iloc[i] < last_pivot:
-                last_pivot = close.iloc[i]
-                last_pivot_idx = i
-                zigzag[last_pivot_idx] = last_pivot
-            elif (close.iloc[i] - last_pivot) / last_pivot * 100 >= threshold:
-                trend = "up"
-                last_pivot = close.iloc[i]
-                last_pivot_idx = i
-                zigzag[last_pivot_idx] = last_pivot
-
-    return pd.Series(zigzag, index=df.index)
-
-def predict_elliott_wave(df, zigzag_threshold=5):
-    zz = compute_zigzag(df, threshold=zigzag_threshold)
-    pivots = zz.dropna()
-    signals_buy = pd.Series(False, index=df.index)
-    signals_sell = pd.Series(False, index=df.index)
-
-    pivot_points = pivots.values
-    pivot_indices = pivots.index
-
-    lows = []
-    highs = []
-
-    for i in range(1, len(pivot_points) - 1):
-        prev_p = pivot_points[i-1]
-        curr = pivot_points[i]
-        next_p = pivot_points[i+1]
-        idx = pivot_indices[i]
-
-        if curr < prev_p and curr < next_p:
-            lows.append(idx)
-        elif curr > prev_p and curr > next_p:
-            highs.append(idx)
-
-    for low_idx in lows:
-        if low_idx in signals_buy.index:
-            signals_buy.loc[low_idx] = True
-
-    for high_idx in highs:
-        if high_idx in signals_sell.index:
-            signals_sell.loc[high_idx] = True
-
-    return signals_buy, signals_sell
-
-def add_elliott_wave_signals(df, zigzag_threshold=5):
-    buy_sig, sell_sig = predict_elliott_wave(df, zigzag_threshold)
-    df = df.copy()
-    df["Elliott_Buy"] = buy_sig
-    df["Elliott_Sell"] = sell_sig
-    return df
-
-def get_features_for_all(tickers, sma_windows, support_window, zigzag_threshold=5):
+def get_features_for_all(tickers, sma_windows, support_window):
     multi_df = download_data_multi(tickers)
     if multi_df is None or multi_df.empty:
         return pd.DataFrame()
 
     features_list = []
-    elliott_signals_list = []
     if isinstance(multi_df.columns, pd.MultiIndex):
         available = multi_df.columns.get_level_values(0).unique()
         for ticker in tickers:
@@ -204,41 +121,11 @@ def get_features_for_all(tickers, sma_windows, support_window, zigzag_threshold=
             feats = get_latest_features_for_ticker(tdf, ticker, sma_windows, support_window)
             if feats:
                 features_list.append(feats)
-            elliott_df = add_elliott_wave_signals(tdf, zigzag_threshold=zigzag_threshold)
-            latest_elliott = elliott_df.iloc[-1][["Elliott_Buy", "Elliott_Sell"]].to_dict()
-            latest_elliott["Ticker"] = ticker
-            elliott_signals_list.append(latest_elliott)
     else:
         feats = get_latest_features_for_ticker(multi_df.dropna(), tickers[0], sma_windows, support_window)
         if feats:
             features_list.append(feats)
-        elliott_df = add_elliott_wave_signals(multi_df.dropna(), zigzag_threshold=zigzag_threshold)
-        latest_elliott = elliott_df.iloc[-1][["Elliott_Buy", "Elliott_Sell"]].to_dict()
-        latest_elliott["Ticker"] = tickers
-        elliott_signals_list.append(latest_elliott)
-
-    features_df = pd.DataFrame(features_list)
-    elliott_df = pd.DataFrame(elliott_signals_list)
-
-    merged = features_df.merge(elliott_df, on="Ticker", how="left")
-    return merged
-
-def combine_signals(rule_df, ml_df, elliott_df):
-    df = rule_df.copy()
-    df = df.set_index("Ticker")
-    ml_df = ml_df.set_index("Ticker")
-    elliott_df = elliott_df.set_index("Ticker")
-
-    combined_df = df.copy()
-    combined_df["ML_Pred"] = ml_df["ML_Pred"]
-    combined_df["Elliott_Buy"] = elliott_df["Elliott_Buy"]
-    combined_df["Elliott_Sell"] = elliott_df["Elliott_Sell"]
-
-    combined_df["Combined_Buy"] = (((combined_df["Buy_Point"]) | (combined_df["ML_Pred"] == "BUY")) & combined_df["Elliott_Buy"])
-    combined_df["Combined_Sell"] = (((combined_df["Sell_Point"]) | (combined_df["ML_Pred"] == "SELL")) & combined_df["Elliott_Sell"])
-
-    combined_df = combined_df.reset_index()
-    return combined_df
+    return pd.DataFrame(features_list)
 
 # ---------------- RULE-BASED STRATEGY ----------------
 def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
@@ -260,8 +147,8 @@ def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
         (results["RSI"] > 50)
     )
 
-    # Correct labeling
     results["Buy_Point"] = results["Reversal_Buy"] | results["Trend_Buy"]  # Buy signals
+
     results["Sell_Point"] = (
         ((results["RSI"] > rsi_sell) & (results["Bearish_Div"])) |
         (results["Close"] < results["Support"]) |
@@ -376,7 +263,8 @@ def latest_feature_row_for_ticker(ticker, sma_windows, support_window, feature_c
     row = row[feature_cols]
     return row
 
-# ---------------- UI ----------------
+# -------------- Streamlit UI --------------
+
 with st.sidebar:
     st.header("Settings")
 
@@ -390,6 +278,7 @@ with st.sidebar:
     support_window = st.number_input("Support Period (days)", 5, 200, 30)
 
     st.markdown("---")
+
     label_mode = st.radio("ML Labeling Mode", ["Rule-based (teach the rules)", "Future Returns"], index=0)
 
     if label_mode == "Rule-based (teach the rules)":
@@ -436,23 +325,22 @@ def stqdm(iterable, total=None, desc=""):
 if run_analysis:
     sma_tuple = (sma_w1, sma_w2, sma_w3)
 
-    with st.spinner("Fetching data & computing features including Elliott Wave..."):
-        feats_with_elliott = get_features_for_all(selected_tickers, sma_tuple, support_window, zigzag_threshold=3)
-        if feats_with_elliott is None or feats_with_elliott.empty:
+    with st.spinner("Fetching data & computing rule-based features..."):
+        feats = get_features_for_all(selected_tickers, sma_tuple, support_window)
+        if feats is None or feats.empty:
             st.error("No valid data for selected tickers.")
         else:
-            preds_rule = predict_buy_sell_rule(feats_with_elliott, rsi_buy, rsi_sell)
+            preds_rule = predict_buy_sell_rule(feats, rsi_buy, rsi_sell)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "✅ Rule Buy (current snapshot)",
         "❌ Rule Sell (current snapshot)",
         "📈 Chart",
-        "🤖 ML Signals",
-        "📊 Elliott & Combined Signals"
+        "🤖 ML Signals"
     ])
 
     with tab1:
-        if feats_with_elliott.empty:
+        if feats.empty:
             st.info("No rule-based buy signals.")
         else:
             df_buy = preds_rule[preds_rule["Buy_Point"]]
@@ -466,7 +354,7 @@ if run_analysis:
             st.write(df_buy.to_html(escape=False, index=False), unsafe_allow_html=True)
 
     with tab2:
-        if feats_with_elliott.empty:
+        if feats.empty:
             st.info("No rule-based sell signals.")
         else:
             df_sell = preds_rule[preds_rule["Sell_Point"]]
@@ -496,12 +384,12 @@ if run_analysis:
         else:
             with st.spinner("Building ML dataset & training model..."):
                 if label_mode == "Rule-based (teach the rules)":
-                    X, y, feature_cols_ml, tickers_series = build_ml_dataset_for_tickers(
+                    X, y, feature_cols, tickers_series = build_ml_dataset_for_tickers(
                         selected_tickers, sma_tuple, support_window,
                         label_mode="rule", rsi_buy=rsi_buy, rsi_sell=rsi_sell
                     )
                 else:
-                    X, y, feature_cols_ml, tickers_series = build_ml_dataset_for_tickers(
+                    X, y, feature_cols, tickers_series = build_ml_dataset_for_tickers(
                         selected_tickers, sma_tuple, support_window,
                         label_mode="future", horizon=ml_horizon, buy_thr=ml_buy_thr, sell_thr=ml_sell_thr
                     )
@@ -516,7 +404,7 @@ if run_analysis:
 
                     rows = []
                     for t in stqdm(selected_tickers, desc="Scoring", total=len(selected_tickers)):
-                        row = latest_feature_row_for_ticker(t, sma_tuple, support_window, feature_cols_ml)
+                        row = latest_feature_row_for_ticker(t, sma_tuple, support_window, feature_cols)
                         if row is None:
                             continue
                         proba = clf.predict_proba(row)[0] if hasattr(clf, "predict_proba") else None
@@ -528,40 +416,21 @@ if run_analysis:
                             "Prob_Hold": float(proba[list(clf.classes_).index(0)]) if proba is not None and 0 in clf.classes_ else np.nan,
                             "Prob_Sell": float(proba[list(clf.classes_).index(-1)]) if proba is not None and -1 in clf.classes_ else np.nan,
                         })
-                    ml_df = pd.DataFrame(rows).sort_values(["ML_Pred","Prob_Buy"], ascending=[True, False])
+                    ml_df = pd.DataFrame(rows).sort_values(["ML_Pred", "Prob_Buy"], ascending=[True, False])
                     def tradingview_link(ticker):
                         return f"https://in.tradingview.com/chart/?symbol=NSE%3A{ticker.replace('.NS','')}"
                     ml_df["TradingView"] = ml_df["Ticker"].apply(tradingview_link)
 
-    with tab5:
-        if not SKLEARN_OK:
-            st.error("scikit-learn not available. Install with: pip install scikit-learn")
-        else:
-            if 'ml_df' not in locals() or ml_df.empty:
-                st.info("Run ML Signals tab first to generate ML predictions.")
-            else:
-                elliott_signals_df = feats_with_elliott[["Ticker", "Elliott_Buy", "Elliott_Sell"]]
-                combined_df = combine_signals(preds_rule, ml_df, elliott_signals_df)
-                st.subheader("Elliott Wave Signals (Latest)")
-                elliott_disp = elliott_signals_df[(elliott_signals_df["Elliott_Buy"]) | (elliott_signals_df["Elliott_Sell"])]
-                if elliott_disp.empty:
-                    st.write("No Elliott Wave buy or sell signals currently.")
-                else:
-                    st.write(elliott_disp)
-
-                st.subheader("Combined Buy/Sell Signals")
-                combined_disp = combined_df[(combined_df["Combined_Buy"]) | (combined_df["Combined_Sell"])][["Ticker", "Combined_Buy", "Combined_Sell"]]
-                if combined_disp.empty:
-                    st.write("No combined buy/sell signals currently.")
-                else:
-                    st.write(combined_disp)
-
-                st.download_button(
-                    "Download Combined Signals CSV",
-                    combined_df.to_csv(index=False).encode(),
-                    "combined_signals.csv",
-                    "text/csv",
-                )
+                    st.dataframe(
+                        ml_df,
+                        use_container_width=True,
+                        column_config={
+                            "TradingView": st.column_config.LinkColumn(
+                                "TradingView",
+                                display_text="📈 Chart"
+                            )
+                        }
+                    )
 
     if 'preds_rule' in locals() and preds_rule is not None and not preds_rule.empty:
         st.download_button(
@@ -570,6 +439,5 @@ if run_analysis:
             "nifty500_rule_signals.csv",
             "text/csv",
         )
-
 
 st.markdown("⚠ Educational use only — not financial advice.")

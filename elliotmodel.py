@@ -350,34 +350,7 @@ def compute_features(df, sma_windows=(20, 50, 200), support_window=30, zz_pct=0.
 
     return df
 
-from scipy.signal import find_peaks
 
-def add_elliott_features(df):
-    df = df.copy()
-
-    # Detect swing highs/lows
-    peaks, _ = find_peaks(df["Close"], distance=5)
-    troughs, _ = find_peaks(-df["Close"], distance=5)
-
-    # Initialize Elliott columns
-    df["Elliott_Wave_No"] = 0
-    df["Elliott_Phase_Code"] = 0
-    df["Elliott_Bullish_Int"] = 0
-    df["Elliott_Bearish_Int"] = 0
-
-    # Mark peaks = bearish impulse
-    for i, p in enumerate(peaks):
-        df.loc[p, "Elliott_Wave_No"] = (i % 5) + 1
-        df.loc[p, "Elliott_Phase_Code"] = -1
-        df.loc[p, "Elliott_Bearish_Int"] = 1
-
-    # Mark troughs = bullish impulse
-    for i, t in enumerate(troughs):
-        df.loc[t, "Elliott_Wave_No"] = (i % 5) + 1
-        df.loc[t, "Elliott_Phase_Code"] = 1
-        df.loc[t, "Elliott_Bullish_Int"] = 1
-
-    return df
 
 
 def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_window, zz_pct, zz_min_bars):
@@ -644,7 +617,7 @@ if run_analysis:
             # add TradingView link next to ticker
             df_buy["TradingView"] = df_buy["Ticker"].apply(lambda x: f'<a href="https://in.tradingview.com/chart/?symbol=NSE%3A{x.replace(".NS","")}" target="_blank">📈 Chart</a>')
             # Recent useful columns
-            show_cols = ["Ticker","TradingView","Close","RSI","Elliott_Phase_Code","Elliott_Wave_No","Elliott_Bullish_Int","Reversal_Buy","Trend_Buy"]
+            show_cols = ["Ticker","TradingView","Close","RSI","Reversal_Buy","Trend_Buy"]
             cols = [c for c in show_cols if c in df_buy.columns] + [c for c in df_buy.columns if c not in show_cols]
             st.write(df_buy[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
 
@@ -654,7 +627,7 @@ if run_analysis:
         else:
             df_sell = preds_rule[preds_rule["Sell_Point"]].copy()
             df_sell["TradingView"] = df_sell["Ticker"].apply(lambda x: f'<a href="https://in.tradingview.com/chart/?symbol=NSE%3A{x.replace(".NS","")}" target="_blank">📈 Chart</a>')
-            show_cols = ["Ticker","TradingView","Close","RSI","Elliott_Phase_Code","Elliott_Wave_No","Elliott_Bearish_Int"]
+            show_cols = ["Ticker","TradingView","Close","RSI"]
             cols = [c for c in show_cols if c in df_sell.columns] + [c for c in df_sell.columns if c not in show_cols]
             st.write(df_sell[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
 
@@ -741,6 +714,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 

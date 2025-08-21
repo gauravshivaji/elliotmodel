@@ -423,8 +423,8 @@ def predict_buy_sell_rule(df, rsi_buy=40, rsi_sell=60):
     ew_bear = (results.get("Elliott_Bearish_Int", 0) == 1) | (results.get("Elliott_Phase_Code", 0) == -1)
 
     # --- Buy/Sell refinements ---
-    results["Reversal_Buy"] = reversal_buy_core & ew_bull
-    results["Trend_Buy"] = trend_buy_core & ew_bull
+    results["Reversal_Buy"] = reversal_buy_core | ew_bull
+    results["Trend_Buy"] = trend_buy_core |ew_bull
 
     ew_only_buy = (
         ew_bull &
@@ -709,6 +709,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 
